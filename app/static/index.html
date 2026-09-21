@@ -10,7 +10,7 @@
   <header class="topbar">
     <div class="topbar-inner">
       <h1>直流网络校核器</h1>
-      <p class="subtitle">改进节点分析（MNA）· 节点电压 / 支路电流 / 功率平衡校核 · 参数扫描 · 元件敏感度分析 · 端口戴维南等效 · SPICE 网表互换</p>
+      <p class="subtitle">改进节点分析（MNA）· 节点电压 / 支路电流 / 功率平衡校核 · 参数扫描 · 元件敏感度分析 · 电阻容差包络 · 端口戴维南等效 · SPICE 网表互换</p>
     </div>
   </header>
 
@@ -185,6 +185,49 @@
         <div id="sensitivity-feedback" class="error-panel hidden"></div>
       </div>
 
+      <div class="card">
+        <div class="card-head">
+          <h2>电阻容差包络</h2>
+          <div class="head-right">
+            <span class="count" id="env-count">0 / 8</span>
+            <button class="btn btn-small" id="btn-env-add" disabled>＋ 添加电阻</button>
+          </div>
+        </div>
+        <div class="sweep-form">
+          <label class="sweep-field">
+            <span>目标类型</span>
+            <select id="env-quantity" class="input" disabled>
+              <option value="voltage">节点电压 (V)</option>
+              <option value="current">支路电流 (A)</option>
+            </select>
+          </label>
+          <label class="sweep-field">
+            <span id="env-target-label">目标节点</span>
+            <select id="env-target" class="input" disabled></select>
+          </label>
+        </div>
+        <div class="table-wrap env-rows-wrap">
+          <table class="grid" id="env-rows">
+            <thead>
+              <tr>
+                <th style="width:56px">#</th>
+                <th>容差电阻</th>
+                <th style="width:150px">对称容差 (%)</th>
+                <th style="width:52px">操作</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="hint">
+          选择 <b>1～8 个电阻</b>并分别填写 <b>0.01%～50%</b> 的对称容差，后端枚举全部
+          <b>2<sup>N</sup></b> 个上下限角点并复用 MNA 求解，给出目标的最小 / 最大值与对应角点。
+          电路或容差配置变化后旧包络自动清空；任一角点不可解时整体报错并标出角点。
+        </p>
+        <button class="btn btn-block" id="btn-envelope" disabled>📦 计算容差包络</button>
+        <div id="envelope-feedback" class="error-panel hidden"></div>
+      </div>
+
       <button class="btn btn-primary btn-block" id="btn-solve">▶ 校核求解</button>
     </section>
 
@@ -279,6 +322,42 @@
             S = (p/F₀)·dF/dp：元件参数每相对变化 1% 时目标值近似相对变化的百分数（负号表示反向变化）；
             dF/dp 为中心差分得到的有量纲导数。目标基准值为 0 时 S 不可归一化，仅显示导数。
             节点表变更后旧结果自动清空。
+          </p>
+        </div>
+      </div>
+
+      <div id="envelope-result" class="hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>电阻容差包络</h2>
+            <span class="count" id="envelope-meta"></span>
+          </div>
+          <div id="envelope-summary" class="sens-summary"></div>
+          <div id="envelope-chart"></div>
+          <div id="envelope-extremes" class="env-extremes"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>角点明细（按目标值排序）</h2>
+            <span class="legend"><i class="sw env-min"></i>最小角点　<i class="sw env-max"></i>最大角点</span>
+          </div>
+          <div class="table-wrap env-corners-wrap">
+            <table class="grid result-grid" id="envelope-table">
+              <thead>
+                <tr>
+                  <th style="width:56px">角点</th>
+                  <th>电阻上 / 下限组合</th>
+                  <th style="width:130px">目标值</th>
+                  <th style="width:120px">相对标称偏差</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="hint">
+            <b>低</b> = R·(1−tol) 下限，<b>高</b> = R·(1+tol) 上限；角点 C0～C(2<sup>N</sup>−1)
+            按所选电阻顺序做二进制编码（低=0、高=1）。标称值 F₀ 介于最小 / 最大值之间。
           </p>
         </div>
       </div>

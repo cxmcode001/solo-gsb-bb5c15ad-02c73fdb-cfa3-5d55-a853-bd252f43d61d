@@ -64,6 +64,24 @@
     但仍给出有量纲导数；
   - 分析在深拷贝上进行，不改写元件表；**节点表发生变更（增删 / 改名）后
     旧结果自动清空**，且需重新校核求解后才能再次发起分析。
+- **电阻容差包络**：在网络**校核求解成功**后，选择 **1～8 个电阻**并分别填写
+  **0.01%～50%** 的**对称容差**（下限 `R·(1−tol)`、上限 `R·(1+tol)`），再选择
+  **节点电压**或**支路电流**作为目标。后端枚举所选电阻上下限的
+  **全部 2^N 个角点**（N≤8，最多 256 个），每个角点都在网络副本上替换阻值后
+  **复用同一套 MNA 求解**，返回：
+  - 目标的**最小值 / 最大值**及取得极值的**角点**（角点编号、各电阻上 / 下限
+    取向与实际阻值）、**标称值 F₀**、最小 / 最大角点相对标称值的
+    **绝对偏差与相对偏差**（F₀ = 0 时相对偏差为 `null`）；
+  - 结果区用**区间数轴**展示包络（标称值虚线、最小 / 最大角点三角标记），
+    下方两张极值卡与**按目标值排序的全部角点明细表**；
+  - **容差参数本身非法**（缺少段、电阻数量不在 1～8、电阻不存在 / 重复 /
+    不是 R、容差越界、目标非法等）时返回 `422 envelope_validation`；
+    **标称网络无唯一解**时返回 `422` 且错误分组带 `stage:"baseline"`；
+    **任一角点不可解**时不返回半截包络，整体 `422` 并为每个失败角点标出
+    `stage:"corner"`、`corner / corner_id`（C0～C(2^N−1)）、`sides`
+    （各电阻 `low` / `high` 取向）与该角点各电阻的实际阻值；
+  - 计算在深拷贝上进行，不改写元件表；**电路（节点 / 元件 / 接地）或容差配置
+    （电阻选择 / 容差数值 / 目标）发生变化时，旧包络立即清空**，需重新计算。
 - **SPICE 网表互换**：左侧「SPICE 网表互换」卡片提供网表文本区，支持
   文本 ⇄ 表格双向转换。
   - **导入语法**：忽略空行；第一个非空白字符为 `*` 的行作整行注释；
@@ -111,7 +129,9 @@ API：
 
 - `GET  /api/meta`：容量与元件类型元信息（含 `sweep_min_points` /
   `sweep_max_points`，即 2 / 101，以及 `sensitivity_min_ratio` /
-  `sensitivity_max_ratio`，即 `0.0001` / `0.1`）；
+  `sensitivity_max_ratio`，即 `0.0001` / `0.1`，以及 `envelope_min_resistors` /
+  `envelope_max_resistors` / `envelope_min_tolerance` / `envelope_max_tolerance`，
+  即 1 / 8 / `0.0001` / `0.5`）；
 - `POST /api/solve`：请求体为网络 JSON（见下），成功返回 `200`，
   输入或结构问题返回 `422`，错误按 `no_ground / floating_subnet / voltage_conflict / validation`
   分组列出；
@@ -133,6 +153,16 @@ API：
   **基准网络无唯一解**时同样返回 `422`，错误分组沿用 `/api/solve` 的编码并带
   `stage: "baseline"`；基准可解时恒返回 `200`，各元件的正/负扰动失败以
   `status: "error"` 与带 `side` 标记的错误分组内联在 `elements[]` 中，不影响其它元件。
+- `POST /api/envelope`：电阻容差包络。请求体与 `/api/solve` 相同，另加一个
+  `envelope` 段（见下）。**容差参数本身非法**（缺少 `envelope` 段、电阻数量不在
+  1～8、电阻不存在 / 重复 / 不是 R、容差不在 `0.0001～0.5` 即 0.01%～50%、
+  目标类型或目标节点 / 支路非法等）时返回 `422 envelope_validation`；参数合法但
+  **标称网络无唯一解**时返回 `422`，错误分组沿用 `/api/solve` 的编码并带
+  `stage: "baseline"`；**枚举到的任一角点不可解**（结构矛盾 / 奇异 / 目标值非有限）
+  时同样整体返回 `422`，每个失败角点对应一条错误分组，沿用 `/api/solve` 编码并带
+  `stage: "corner"`、`corner`（角点序号）、`corner_id`（`C0`～`C(2^N−1)`）、
+  `sides`（各电阻 `low` / `high` 取向）与 `resistors`（角点各电阻实际取值）；
+  全部角点可解时返回 `200`。
 - `POST /api/spice/import`：SPICE 网表导入。请求体 `{"netlist": "<文本>"}`；
   缺少字符串 `netlist` 字段返回 `400`。解析成功返回 `200`，响应体即标准网络 JSON
   （`ground` 固定为 `"0"`、`nodes` 由端点按首次出现顺序推导、`elements` 含解析后的
@@ -481,6 +511,159 @@ curl -s -X POST http://localhost:8000/api/sensitivity \
 | 元件正 / 负扰动后网络无唯一解 | 该元件 `status:"error"`，错误分组带 `side:"plus"` / `"minus"`，其它继续 |
 | 目标基准值 F₀ = 0 | 元件照常成功，`sensitivity:null`、不排名，仅返回导数 |
 
+## 电阻容差包络
+
+### 页面操作
+
+1. 按常规录入网络（可先“载入示例①”），先点击 **▶ 校核求解** 并成功——
+   求解成功后左下「电阻容差包络」卡片才会启用；
+2. 在「目标类型」中选择 **节点电压 (V)** 或 **支路电流 (A)**，并选定具体
+   **目标节点**或**目标支路**（支路以“编号 + p→n”标注，与支路电流表一致）；
+3. 在电阻表中逐行选择 **1～8 个电阻**（只能选元件表中的 R），并分别填写
+   **0.01%～50%** 的**对称容差**（百分数，默认 5%）；点击「＋ 添加电阻」增行，
+   每行右侧 ✕ 删除（至少保留一行）；
+4. 点击 **📦 计算容差包络**，后端枚举所选电阻上下限的**全部 2^N 个角点**
+   （最多 8 个电阻 → 256 个角点），右侧结果区显示：
+   - 概要行：**标称值 F₀、最小值、最大值**（括号内为相对标称偏差）与
+     **包络宽度**（(max−min)/|F₀|，F₀=0 时显示“—”）；
+   - **包络区间数轴**：蓝色色带为 [min, max]，虚线为标称值 F₀，
+     橙色三角标出最小角点、绿色三角标出最大角点；
+   - **最小 / 最大角点两张极值卡**：目标值、角点编号（C0～C(2^N−1)）、
+     相对标称偏差（Δ 绝对值）以及取得极值时每个电阻的**上 / 下限取向与实际阻值**
+     （低 = R·(1−tol)，高 = R·(1+tol)）；
+   - **角点明细表**：全部角点按目标值升序排列，橙色行为最小角点、绿色行为最大角点，
+     每行列出该角点的完整电阻组合、目标值与相对标称偏差。
+5. **电路（节点 / 元件 / 接地）或容差配置（电阻选择 / 容差数值 / 分析目标）
+   一旦变化，旧包络立即清空隐藏**，需重新点击计算；节点表结构变更还会禁用入口，
+   需重新校核求解。
+
+角点编号 `C0`～`C(2^N−1)` 按所选电阻的顺序做二进制编码：第 j 个电阻对应的
+二进制位为 0 表示取**下限 low**（`R_j·(1−tol_j)`），为 1 表示取**上限 high**
+（`R_j·(1+tol_j)`）。例如选择 R1、R2 时，`C1 = [高, 低]`、`C2 = [低, 高]`。
+
+### 请求体与返回结构
+
+在网络 JSON 中追加 `envelope` 段（`tolerance` 为小数比例，如 10% 填 `0.1`）：
+
+```bash
+curl -s -X POST http://localhost:8000/api/envelope \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ground": "0",
+    "nodes": ["0", "1", "2"],
+    "elements": [
+      {"id": "V1", "type": "V", "node_p": "1", "node_n": "0", "value": 10},
+      {"id": "R1", "type": "R", "node_p": "1", "node_n": "2", "value": 10},
+      {"id": "R2", "type": "R", "node_p": "2", "node_n": "0", "value": 20}
+    ],
+    "envelope": {
+      "quantity": "voltage",
+      "target": "2",
+      "resistors": [
+        {"id": "R1", "tolerance": 0.1},
+        {"id": "R2", "tolerance": 0.1}
+      ]
+    }
+  }'
+```
+
+返回（`200`，节选）：
+
+```json
+{
+  "ok": true,
+  "envelope": {
+    "quantity": "voltage",
+    "target": "2",
+    "target_name": "节点 2 电压",
+    "target_unit": "V",
+    "resistors": [
+      {"id": "R1", "type": "R", "node_p": "1", "node_n": "2", "index": 1,
+       "base_value": 10.0, "tolerance": 0.1,
+       "value_low": 9.0, "value_high": 11.0},
+      {"id": "R2", "type": "R", "node_p": "2", "node_n": "0", "index": 2,
+       "base_value": 20.0, "tolerance": 0.1,
+       "value_low": 18.0, "value_high": 22.0}
+    ],
+    "corner_count": 4,
+    "nominal_value": 6.666666666666666,
+    "min_value": 6.206896551724139,
+    "max_value": 7.096774193548387,
+    "deviation_abs_min": -0.4597701149425273,
+    "deviation_abs_max": 0.43010752688172094,
+    "deviation_rel_min": -0.0689655172413791,
+    "deviation_rel_max": 0.06451612903225815
+  },
+  "min_corner": {
+    "index": 1, "corner_id": "C1", "sides": ["high", "low"],
+    "resistor_values": [
+      {"id": "R1", "side": "high", "value": 11.0},
+      {"id": "R2", "side": "low", "value": 18.0}
+    ],
+    "value": 6.206896551724139
+  },
+  "max_corner": {
+    "index": 2, "corner_id": "C2", "sides": ["low", "high"],
+    "resistor_values": [
+      {"id": "R1", "side": "low", "value": 9.0},
+      {"id": "R2", "side": "high", "value": 22.0}
+    ],
+    "value": 7.096774193548387
+  },
+  "corners": [ {"index": 0, "corner_id": "C0", "sides": ["low", "low"], "...": "..."} ],
+  "warnings": []
+}
+```
+
+- `corners[]` 按角点编号（`index` 0～2^N−1）顺序返回全部 2^N 个角点，
+  每个角点含 `sides`（与 `resistors` 同序的 `low` / `high`）、
+  `resistor_values`（实际阻值）与该角点的目标 `value`；
+- `deviation_abs_min/max` 为极值相对**标称值**的绝对偏差（min−F₀、max−F₀），
+  `deviation_rel_min/max` 为相对偏差（除以 F₀）；**F₀ = 0 时相对偏差为 `null`**；
+- 对线性直流网络，标称值 F₀ 恒落在 [min, max] 之内。
+
+容差参数非法时返回 `422 envelope_validation`（一次返回全部问题）：
+
+```json
+{"ok": false,
+ "errors": [{"code": "envelope_validation",
+             "message": "容差包络参数未通过校验",
+             "items": [{"ref": "R1",
+                        "detail": "对称容差必须在 0.01%～50% 之间（当前：90%）"}]}]}
+```
+
+任一角点不可解时，整体 `422` 且错误分组标出角点（下例为白盒示意；正常无源
+电阻网络的角点均可解，该路径同时对目标值非有限等数值情形做防御）：
+
+```json
+{"ok": false,
+ "errors": [{"code": "singular",
+             "stage": "corner",
+             "corner": 1, "corner_id": "C1",
+             "sides": ["high", "low"],
+             "resistors": [
+               {"id": "R1", "side": "high", "value": 11.0},
+               {"id": "R2", "side": "low", "value": 18.0}
+             ],
+             "message": "……", "items": []}]}
+```
+
+### 校验 / 失败规则汇总
+
+| 情形 | 处理 |
+| ---- | ---- |
+| 缺少 `envelope` 段 / `resistors` 不是数组 | 拒绝分析（`422 envelope_validation`） |
+| 电阻数量不在 1～8（含空列表 / 超过 8 个） | 拒绝分析 |
+| 电阻未选 / 不在元件表 / 编号重复 / 类型不是 R | 拒绝分析（逐行指名） |
+| `tolerance` 不是有限数字（含布尔值） | 拒绝分析 |
+| `tolerance` 超出 `0.0001～0.5`（0.01%～50%） | 拒绝分析 |
+| `quantity` 不是 `voltage` / `current`，或目标节点 / 支路不存在 | 拒绝分析 |
+| 标称网络无接地 / 浮置子网 / 电压源冲突 / 奇异 / 输入非法 | `422`，原错误分组 + `stage:"baseline"` |
+| 任一角点求解失败（结构矛盾 / 奇异） | 整体 `422`，错误分组 + `stage:"corner"` 与角点标记（继续枚举，一次列出全部失败角点） |
+| 某角点目标值不是有限实数 | 整体 `422`，错误码 `non_finite_target`，同样带角点标记 |
+| 目标标称值 F₀ = 0 | 分析照常，`deviation_rel_min/max` 为 `null`，包络宽度显示“—” |
+| 电路（节点 / 元件 / 接地）或容差 / 目标配置变化 | 前端立即清空旧包络结果，需重新计算 |
+
 ## SPICE 网表互换
 
 ### 页面操作
@@ -615,20 +798,22 @@ uvicorn app.main:app --reload --port 8000
 ```
 .
 ├── app/
-│   ├── main.py            # FastAPI 路由（solve / sweep / thevenin / sensitivity / spice 导入导出）与静态文件
+│   ├── main.py            # FastAPI 路由（solve / sweep / thevenin / sensitivity / envelope / spice 导入导出）与静态文件
 │   ├── solver.py          # MNA 组装、结构诊断与求解
 │   ├── sweep.py           # 单参数扫描：校验 + 逐点复用 solve
 │   ├── thevenin.py        # 两节点端口戴维南等效：开路电压 + 置零注入测试电流
 │   ├── sensitivity.py     # 元件敏感度：逐元件 ±h 扰动 + 中心差分归一化灵敏度
+│   ├── envelope.py        # 电阻容差包络：1～8 个电阻 2^N 角点枚举 + 最小/最大角点
 │   ├── spice.py           # SPICE 网表解析（注释 / 工程后缀 / 逐行错误）与规范导出（接地 0 映射）
 │   └── static/
-│       ├── index.html     # 页面结构（含扫描、敏感度、端口等效、SPICE 互换表单与结果区）
-│       ├── style.css      # 样式与高亮（含扫描曲线、敏感度条形、端口等效、SPICE 面板样式）
-│       └── app.js         # 表格编辑、校验、单次求解、扫描、敏感度、端口等效与 SPICE 交互
+│       ├── index.html     # 页面结构（含扫描、敏感度、容差包络、端口等效、SPICE 互换表单与结果区）
+│       ├── style.css      # 样式与高亮（含扫描曲线、敏感度条形、容差包络、端口等效、SPICE 面板样式）
+│       └── app.js         # 表格编辑、校验、单次求解、扫描、敏感度、容差包络、端口等效与 SPICE 交互
 ├── test_solver.py         # 求解器冒烟测试：python3 test_solver.py
 ├── test_sweep.py          # 扫描冒烟测试：python3 test_sweep.py
 ├── test_thevenin.py       # 端口等效冒烟测试：python3 test_thevenin.py
 ├── test_sensitivity.py    # 敏感度冒烟测试：python3 test_sensitivity.py
+├── test_envelope.py       # 容差包络冒烟测试：python3 test_envelope.py
 ├── test_spice.py          # SPICE 网表互换冒烟测试：python3 test_spice.py
 ├── Dockerfile
 ├── compose.yaml

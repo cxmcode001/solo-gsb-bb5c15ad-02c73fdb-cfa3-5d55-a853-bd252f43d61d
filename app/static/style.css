@@ -320,6 +320,60 @@ body {
 .sens-bar-pos { background: var(--brand); }
 .sens-bar-neg { background: var(--neg); }
 
+/* ---------------- 电阻容差包络 ---------------- */
+.env-rows-wrap { margin-bottom: 6px; }
+.env-rows-wrap td input { text-align: right; }
+
+.env-min { background: var(--neg); }
+.env-max { background: var(--ok); }
+
+.sweep-chart .env-band { fill: rgba(27, 95, 192, 0.12); stroke: var(--brand);
+  stroke-width: 1.2; stroke-dasharray: 5 3; }
+.sweep-chart .env-min-tick { stroke: var(--neg); stroke-width: 2; fill: var(--neg); }
+.sweep-chart .env-max-tick { stroke: var(--ok); stroke-width: 2; fill: var(--ok); }
+.sweep-chart .env-nominal { stroke: var(--brand-dark); stroke-width: 1.6; stroke-dasharray: 6 3; }
+.sweep-chart .env-tag { font-size: 11.5px; font-weight: 700; }
+.sweep-chart text.env-min-tick { fill: var(--neg); }
+.sweep-chart text.env-max-tick { fill: var(--ok); }
+.sweep-chart text.env-nom-tag { fill: var(--brand-dark); }
+
+.env-extremes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+.env-ext-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 14px;
+  background: #fbfcfe;
+}
+.env-ext-min { border-left: 4px solid var(--neg); }
+.env-ext-max { border-left: 4px solid var(--ok); }
+.env-ext-head { font-weight: 700; font-size: 13.5px; margin-bottom: 4px; }
+.env-ext-min .env-ext-head { color: var(--neg); }
+.env-ext-max .env-ext-head { color: var(--ok); }
+.env-ext-value { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.env-ext-sub { color: var(--ink-soft); font-size: 12.5px; margin: 3px 0 8px; }
+.env-ext-combo { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.env-combo {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  background: #fff;
+}
+.env-side-low { border-left: 3px solid var(--neg); }
+.env-side-high { border-left: 3px solid var(--ok); }
+
+.env-corners-wrap { max-height: 360px; overflow-y: auto; }
+#envelope-table tr.row-env-min td { background: #fdf0e9; }
+#envelope-table tr.row-env-max td { background: var(--ok-bg); }
+
 /* ---------------- SPICE 网表互换 ---------------- */
 .spice-text {
   width: 100%;

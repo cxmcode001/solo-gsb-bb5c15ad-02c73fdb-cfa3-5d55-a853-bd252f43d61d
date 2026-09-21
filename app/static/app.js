@@ -5,6 +5,10 @@ const MAX_NODES = 30;
 const MAX_ELEMENTS = 90;
 const SWEEP_MIN_POINTS = 2;
 const SWEEP_MAX_POINTS = 101;
+const ENVELOPE_MAX_RESISTORS = 8;
+const ENVELOPE_MIN_TOL_PCT = 0.01;
+const ENVELOPE_MAX_TOL_PCT = 50;
+const ENV_DEFAULT_TOL_PCT = "5";
 const TYPE_LABEL = { R: "电阻", I: "电流源", V: "电压源" };
 const TYPE_UNIT = { R: "Ω", I: "A", V: "V" };
 const POWER_OK_REL = 1e-6; // 相对误差阈值（百万分之一）
@@ -25,6 +29,14 @@ let sensView = { quantity: "voltage", target: null };
 let portSel = { p: "1", n: "0" };
 // 上一次渲染端口下拉时的节点表签名，用于识别“节点变更”
 let nodeSig = "";
+// 最近一次电阻容差包络结果；电路或容差配置变化后立即失效（置 null）
+let envelopeResult = null;
+// 取得当前包络时的电路签名，电路被编辑后据此识别并清空旧结果
+let envelopeCircuitSig = "";
+// 容差电阻表单行：{id: 电阻编号, tolPct: 百分数输入（字符串）}
+let envRows = [{ id: "", tolPct: ENV_DEFAULT_TOL_PCT }];
+// 包络目标下拉当前选择（跨目标类型切换时尽量保留同编号）
+let envView = { quantity: "voltage", target: null };
 
 function freshState() {
   return {
@@ -124,6 +136,8 @@ function renderPortSelects() {
     // 节点表结构（数量 / 编号 / 顺序）发生变化：旧的端口等效 / 敏感度结果失效
     invalidateThevenin();
     invalidateSensitivity();
+    setEnvelopeFormEnabled(false);
+    invalidateEnvelope();
     nodeSig = currentNodeSig();
   }
   // 端点缺失时保留下拉中的红字“（缺失）”选项，不静默改值（与元件端点下拉一致）
@@ -205,6 +219,158 @@ $("#sens-quantity").addEventListener("change", () => {
 });
 $("#sens-target").addEventListener("change", (ev) => {
   sensView.target = ev.target.value;
+});
+
+/* ------------------------------ 电阻容差包络 ------------------------------ */
+function circuitSig() {
+  // 与 buildPayload 对应的电路签名：节点表 / 接地 / 元件连接与数值任一变化即失效
+  return JSON.stringify(buildPayload());
+}
+
+function resistorElements() {
+  return state.elements.filter((e) => e.type === "R");
+}
+
+function setEnvelopeFormEnabled(enabled) {
+  // 求解成功前 / 节点表变更后：目标下拉、添加按钮与提交按钮不可用
+  const disabled = !enabled;
+  $("#env-quantity").disabled = disabled;
+  $("#env-target").disabled = disabled;
+  $("#btn-env-add").disabled =
+    disabled || envRows.length >= ENVELOPE_MAX_RESISTORS;
+  $("#btn-envelope").disabled = disabled;
+  // 已渲染的电阻行下拉 / 输入 / 删除按钮也要同步禁用态
+  document.querySelectorAll("#env-rows tbody tr").forEach((tr) => {
+    tr.querySelectorAll("select, input, button.icon-del").forEach((c) => {
+      c.disabled = disabled;
+    });
+  });
+}
+
+function fillEnvResistorSelect(select, current) {
+  // 仅列出 R 元件；已选电阻被删除 / 改类型时以红字“（缺失）”选项保留
+  select.innerHTML = "";
+  select.appendChild(el("option", { value: "", text: "—" }));
+  resistorElements().forEach((e) =>
+    select.appendChild(
+      el("option", {
+        value: e.id,
+        text: `${e.id || "(未命名)"}（${e.node_p}→${e.node_n}，${e.value} Ω）`,
+      })
+    )
+  );
+  if (current && !resistorElements().some((e) => e.id === current)) {
+    const opt = el("option", { value: current, text: current + "（缺失）" });
+    opt.style.color = "var(--err)";
+    select.appendChild(opt);
+  }
+  select.value = current || "";
+}
+
+function renderEnvRows() {
+  const tbody = $("#env-rows tbody");
+  tbody.innerHTML = "";
+  envRows.forEach((row, i) => {
+    const sel = el("select");
+    fillEnvResistorSelect(sel, row.id);
+    sel.disabled = !lastSolve;
+    sel.addEventListener("change", () => {
+      envRows[i].id = sel.value;
+      invalidateEnvelope();
+    });
+
+    const tolInput = el("input", {
+      type: "number", step: "any",
+      min: String(ENVELOPE_MIN_TOL_PCT), max: String(ENVELOPE_MAX_TOL_PCT),
+      value: row.tolPct, placeholder: "0.01～50",
+    });
+    tolInput.disabled = !lastSolve;
+    tolInput.addEventListener("input", () => {
+      envRows[i].tolPct = tolInput.value;
+      invalidateEnvelope();
+    });
+
+    const del = el("button", { class: "icon-del", title: "删除", text: "✕" });
+    del.disabled = !lastSolve;
+    del.addEventListener("click", () => {
+      envRows.splice(i, 1);
+      if (envRows.length === 0) envRows.push({ id: "", tolPct: ENV_DEFAULT_TOL_PCT });
+      invalidateEnvelope();
+      renderEnvRows();
+    });
+
+    const tr = el("tr", {}, [
+      el("td", { text: String(i + 1) }),
+      el("td", {}, [sel]),
+      el("td", {}, [tolInput]),
+      el("td", {}, [del]),
+    ]);
+    tbody.appendChild(tr);
+  });
+  $("#env-count").textContent = `${envRows.length} / ${ENVELOPE_MAX_RESISTORS}`;
+  setEnvelopeFormEnabled(!!lastSolve);
+}
+
+function resetEnvelopeTargets() {
+  // 按当前目标类型重建包络目标下拉（节点来自节点表，支路来自元件表）
+  const sel = $("#env-target");
+  const quantity = $("#env-quantity").value;
+  $("#env-target-label").textContent = quantity === "voltage" ? "目标节点" : "目标支路";
+  sel.innerHTML = "";
+  if (quantity === "voltage") {
+    state.nodes.forEach((n) => sel.appendChild(el("option", { value: n.id, text: n.id })));
+  } else {
+    state.elements.forEach((e) =>
+      sel.appendChild(
+        el("option", {
+          value: e.id,
+          text: `${e.id || "(未命名)"}（${e.type} ${e.node_p}→${e.node_n}）`,
+        })
+      )
+    );
+  }
+  const values = [...sel.options].map((o) => o.value);
+  if (envView.quantity === quantity && envView.target && values.includes(envView.target)) {
+    sel.value = envView.target;
+  } else {
+    sel.value = values[0] || "";
+  }
+  envView = { quantity, target: sel.value };
+}
+
+function invalidateEnvelope() {
+  // 电路或容差配置变化：清空旧的包络结果与反馈（不重置表单输入）
+  envelopeResult = null;
+  envelopeCircuitSig = "";
+  $("#envelope-result").classList.add("hidden");
+  const fb = $("#envelope-feedback");
+  fb.classList.add("hidden");
+  fb.innerHTML = "";
+}
+
+function resetEnvelope() {
+  // 载入示例 / 清空 / 导入网表：彻底重置（含已选电阻、目标与输入）
+  invalidateEnvelope();
+  envRows = [{ id: "", tolPct: ENV_DEFAULT_TOL_PCT }];
+  envView = { quantity: "voltage", target: null };
+  $("#env-quantity").value = "voltage";
+  renderEnvRows();
+}
+
+$("#env-quantity").addEventListener("change", () => {
+  if (!lastSolve) return;
+  resetEnvelopeTargets();
+  invalidateEnvelope();
+});
+$("#env-target").addEventListener("change", (ev) => {
+  envView.target = ev.target.value;
+  invalidateEnvelope();
+});
+$("#btn-env-add").addEventListener("click", () => {
+  if (!lastSolve || envRows.length >= ENVELOPE_MAX_RESISTORS) return;
+  envRows.push({ id: "", tolPct: ENV_DEFAULT_TOL_PCT });
+  invalidateEnvelope();
+  renderEnvRows();
 });
 
 $("#port-p").addEventListener("change", (ev) => {
@@ -321,8 +487,14 @@ function renderAll() {
   renderGroundSelect();
   renderPortSelects();
   renderSweepElements();
-  // 元件行增删后刷新敏感度支路目标（节点表变更已在 renderPortSelects 中禁用表单）
-  if (lastSolve) resetSensitivityTargets();
+  renderEnvRows();
+  // 元件行增删后刷新敏感度 / 包络支路目标（节点表变更已在 renderPortSelects 中禁用表单）
+  if (lastSolve) {
+    resetSensitivityTargets();
+    resetEnvelopeTargets();
+  }
+  // 增删行等结构性编辑也可能改变电路：旧包络立即清空
+  if (envelopeResult && circuitSig() !== envelopeCircuitSig) invalidateEnvelope();
   clearFeedback();
 }
 
@@ -403,6 +575,7 @@ document.querySelectorAll("[data-sample]").forEach((btn) => {
     resetSweep();
     resetThevenin();
     resetSensitivity();
+    resetEnvelope();
     portSel = { p: s.nodes.length > 1 ? s.nodes[1].id : "", n: s.nodes[0]?.id || "" };
     nodeSig = "";
     renderAll();
@@ -415,6 +588,7 @@ $("#btn-clear").addEventListener("click", () => {
   resetSweep();
   resetThevenin();
   resetSensitivity();
+  resetEnvelope();
   portSel = { p: "", n: "" };
   nodeSig = "";
   renderAll();
@@ -684,16 +858,20 @@ $("#btn-solve").addEventListener("click", async () => {
   if (resp.ok && data.ok) {
     renderResults(data);
     showWarnings(data.warnings);
-    // 求解成功：启用敏感度表单并按最近一次求解填充目标下拉
+    // 求解成功：启用敏感度 / 包络表单并按最近一次求解填充目标下拉
     lastSolve = data;
     $("#sens-quantity").value = sensView.quantity || "voltage";
     setSensitivityFormEnabled(true);
     resetSensitivityTargets();
+    $("#env-quantity").value = envView.quantity || "voltage";
+    setEnvelopeFormEnabled(true);
+    resetEnvelopeTargets();
   } else {
     showErrors(data.errors || [{ code: "server", message: "求解失败", items: [] }]);
-    // 求解失败时旧结果仍按“节点表变更”规则处理，这里仅禁用敏感度入口
+    // 求解失败时旧结果仍按“节点表变更”规则处理，这里仅禁用敏感度 / 包络入口
     lastSolve = null;
     setSensitivityFormEnabled(false);
+    setEnvelopeFormEnabled(false);
   }
 });
 
@@ -1127,6 +1305,386 @@ function renderSensitivityResult(r) {
   $("#sensitivity-feedback").classList.add("hidden");
   $("#sensitivity-result").classList.remove("hidden");
 }
+
+/* ------------------------------ 电阻容差包络 ------------------------------ */
+const ENV_STAGE_LABEL = {
+  baseline: "标称网络求解",
+  corner: "容差角点求解",
+};
+const ENV_SIDE_LABEL = { low: "低", high: "高" };
+
+function showEnvelopeFeedback(errors) {
+  const fb = $("#envelope-feedback");
+  fb.innerHTML = "";
+  (errors || []).forEach((g) => {
+    const group = el("div", { class: "err-group" });
+    const tag = g.stage && ENV_STAGE_LABEL[g.stage]
+      ? `［${ENV_STAGE_LABEL[g.stage]}${g.corner_id ? " " + g.corner_id : ""}］`
+      : "";
+    group.appendChild(el("div", { class: "err-title", text: `● ${tag}${g.message}` }));
+
+    // 角点失败：先列出该角点各电阻的上 / 下限取向
+    if (g.stage === "corner" && Array.isArray(g.resistors) && g.resistors.length) {
+      const combo = g.resistors
+        .map((r) => `${r.id}=${ENV_SIDE_LABEL[r.side] || r.side}（${fmt(r.value)} Ω）`)
+        .join("，");
+      group.appendChild(
+        el("ul", {}, [el("li", {}, [el("b", { text: "失败角点组合：" }), el("span", { text: combo })])])
+      );
+    }
+
+    if (g.items && g.items.length) {
+      const ul = el("ul");
+      g.items.forEach((item) => {
+        if (item.ref) {
+          ul.appendChild(
+            el("li", {}, [
+              el("span", { class: "err-ref", text: item.ref + "：" }),
+              document.createTextNode(item.detail),
+            ])
+          );
+        } else if (item.nodes) {
+          ul.appendChild(
+            el("li", {}, [
+              document.createTextNode("子网节点："),
+              el("span", { class: "err-nodes", text: item.nodes.join("、") }),
+            ])
+          );
+        } else {
+          ul.appendChild(el("li", { text: item.detail || JSON.stringify(item) }));
+        }
+      });
+      group.appendChild(ul);
+    }
+    fb.appendChild(group);
+  });
+  $("#envelope-result").classList.add("hidden");
+  fb.classList.remove("hidden");
+}
+
+function clearEnvelopeFeedback() {
+  const fb = $("#envelope-feedback");
+  fb.classList.add("hidden");
+  fb.innerHTML = "";
+}
+
+function validateEnvelopeForm() {
+  const items = [];
+  const quantity = $("#env-quantity").value;
+  const target = $("#env-target").value;
+
+  if (!lastSolve) items.push("请先点击“校核求解”并成功求解当前网络");
+  if (quantity !== "voltage" && quantity !== "current")
+    items.push("目标类型必须是节点电压或支路电流");
+  if (!target) {
+    items.push(quantity === "current" ? "请选择目标支路" : "请选择目标节点");
+  } else if (quantity === "voltage" && !nodeIds().includes(target)) {
+    items.push(`目标节点“${target}”不在节点表中`);
+  } else if (quantity === "current" && !state.elements.some((e) => e.id === target)) {
+    items.push(`目标支路“${target}”不在元件表中`);
+  }
+
+  const rows = envRows;
+  if (rows.length < 1 || rows.length > ENVELOPE_MAX_RESISTORS) {
+    items.push(`参与容差包络的电阻必须为 1～${ENVELOPE_MAX_RESISTORS} 个`);
+  }
+  const picked = new Set();
+  rows.forEach((row, i) => {
+    const ref = `第 ${i + 1} 行`;
+    if (!row.id) {
+      items.push(`${ref}：请选择容差电阻`);
+      return;
+    }
+    const elem = state.elements.find((e) => e.id === row.id);
+    if (!elem) {
+      items.push(`${ref}：电阻“${row.id}”不在元件表中`);
+    } else if (elem.type !== "R") {
+      items.push(`${ref}：元件“${row.id}”不是电阻（R）`);
+    }
+    if (picked.has(row.id)) items.push(`${ref}：电阻“${row.id}”被重复选择`);
+    picked.add(row.id);
+
+    const pctRaw = row.tolPct;
+    const pct = Number(pctRaw);
+    if (pctRaw === "" || !Number.isFinite(pct)) {
+      items.push(`${ref}：对称容差“${pctRaw}”必须是数字`);
+    } else if (pct < ENVELOPE_MIN_TOL_PCT || pct > ENVELOPE_MAX_TOL_PCT) {
+      items.push(`${ref}：电阻“${row.id}”的对称容差必须在 0.01%～50% 之间（当前：${pctRaw}%）`);
+    }
+  });
+
+  if (items.length) {
+    showEnvelopeFeedback([
+      { code: "envelope_validation", message: "容差包络参数未通过校验：" + items.join("；"), items: [] },
+    ]);
+    return null;
+  }
+  return {
+    quantity,
+    target,
+    resistors: rows.map((row) => ({ id: row.id, tolerance: Number(row.tolPct) / 100 })),
+  };
+}
+
+$("#btn-envelope").addEventListener("click", async () => {
+  clearEnvelopeFeedback();
+  const spec = validateEnvelopeForm();
+  if (!spec) return;
+
+  const btn = $("#btn-envelope");
+  const count = 1 << spec.resistors.length;
+  btn.disabled = true;
+  btn.textContent = `计算中（枚举 ${count} 个角点）…`;
+  try {
+    const payload = buildPayload();
+    payload.envelope = spec;
+
+    let resp;
+    try {
+      resp = await fetch("/api/envelope", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      showEnvelopeFeedback([{ code: "network", message: `网络请求失败：${err}`, items: [] }]);
+      return;
+    }
+
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      showEnvelopeFeedback([{ code: "server", message: "服务端返回了无法解析的内容", items: [] }]);
+      return;
+    }
+
+    if (resp.ok && data.ok) {
+      envelopeResult = data;
+      envelopeCircuitSig = circuitSig();
+      renderEnvelopeResult(data);
+      showWarnings(data.warnings);
+    } else {
+      envelopeResult = null;
+      envelopeCircuitSig = "";
+      showEnvelopeFeedback(
+        data.errors || [{ code: "server", message: "容差包络分析失败", items: [] }]
+      );
+    }
+  } finally {
+    btn.disabled = !lastSolve;
+    btn.textContent = "📦 计算容差包络";
+  }
+});
+
+function envRelText(rel) {
+  return rel === null || rel === undefined ? "—（标称值为 0）" : `${fmt(rel * 100)} %`;
+}
+
+function envComboHtml(cell, rvList, sideList) {
+  // rvList 来自 corners[].resistor_values；sideList 来自 envelope.resistors（元信息）
+  const list = rvList || sideList || [];
+  list.forEach((r) => {
+    const side = r.side;
+    const value = rvList ? r.value : (side === "high" ? r.value_high : r.value_low);
+    const chip = el("span", { class: `env-combo env-side-${side}` });
+    chip.appendChild(el("b", { text: r.id }));
+    chip.appendChild(document.createTextNode(` ${ENV_SIDE_LABEL[side] || side} ${fmt(value)} Ω`));
+    cell.appendChild(chip);
+  });
+}
+
+function drawEnvelopeChart(r) {
+  const box = $("#envelope-chart");
+  box.innerHTML = "";
+  const meta = r.envelope;
+  const W = 680;
+  const H = 168;
+  const M = { top: 40, right: 30, bottom: 46, left: 72 };
+  const pw = W - M.left - M.right;
+  const ph = H - M.top - M.bottom;
+  const axisY = M.top + ph / 2 + 8;
+
+  const f0 = meta.nominal_value;
+  const fMin = meta.min_value;
+  const fMax = meta.max_value;
+  const unit = meta.target_unit;
+  let lo = Math.min(fMin, f0);
+  let hi = Math.max(fMax, f0);
+  if (lo === hi) {
+    const d = Math.abs(lo) || 1;
+    lo -= d * 0.15;
+    hi += d * 0.15;
+  }
+  const pad = (hi - lo) * 0.08;
+  lo -= pad;
+  hi += pad;
+  const sx = (x) => M.left + ((x - lo) / (hi - lo)) * pw;
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "sweep-chart", role: "img" });
+
+  // 网格与刻度
+  niceTicks(Math.min(fMin, f0), Math.max(fMax, f0)).forEach((t) => {
+    const x = sx(t);
+    svg.appendChild(svgEl("line", { x1: x, y1: M.top, x2: x, y2: M.top + ph, class: "gridline" }));
+    const txt = svgEl("text", { x, y: M.top + ph + 15, "text-anchor": "middle" });
+    txt.textContent = tickFmt(t);
+    svg.appendChild(txt);
+  });
+
+  // 包络区间
+  svg.appendChild(svgEl("rect", {
+    x: sx(fMin), y: axisY - 15, width: Math.max(1, sx(fMax) - sx(fMin)), height: 30,
+    class: "env-band",
+  }));
+  // 数轴
+  svg.appendChild(svgEl("line", {
+    x1: M.left, y1: axisY, x2: W - M.right, y2: axisY, class: "axis",
+  }));
+
+  // 最小 / 最大角点标记
+  const markExtreme = (xVal, cls, label, up) => {
+    const x = sx(xVal);
+    svg.appendChild(svgEl("line", {
+      x1: x, y1: axisY - 15, x2: x, y2: axisY + 15, class: cls,
+    }));
+    const tri = svgEl("path", {
+      d: up
+        ? `M${x - 6},${axisY - 17} L${x + 6},${axisY - 17} L${x},${axisY - 27} Z`
+        : `M${x - 6},${axisY + 17} L${x + 6},${axisY + 17} L${x},${axisY + 27} Z`,
+      class: cls,
+    });
+    tri.appendChild(svgEl("title"));
+    svg.appendChild(tri);
+    const t = svgEl("text", {
+      x, y: up ? axisY - 31 : axisY + 40, "text-anchor": "middle", class: `env-tag ${cls}`,
+    });
+    t.textContent = label;
+    svg.appendChild(t);
+  };
+  markExtreme(fMin, "env-min-tick", `最小 ${tickFmt(fMin)} ${unit}`, false);
+  markExtreme(fMax, "env-max-tick", `最大 ${tickFmt(fMax)} ${unit}`, true);
+
+  // 标称值标记
+  const x0 = sx(f0);
+  svg.appendChild(svgEl("line", {
+    x1: x0, y1: M.top - 2, x2: x0, y2: M.top + ph + 2, class: "env-nominal",
+  }));
+  const t0 = svgEl("text", { x: x0, y: M.top - 8, "text-anchor": "middle", class: "env-tag env-nom-tag" });
+  t0.textContent = `标称 ${tickFmt(f0)} ${unit}`;
+  svg.appendChild(t0);
+
+  const title = svgEl("text", { x: M.left, y: 17, class: "title" });
+  title.textContent = `${meta.target_name} 的电阻容差包络（${meta.corner_count} 个角点）`;
+  svg.appendChild(title);
+
+  box.appendChild(svg);
+}
+
+function renderEnvelopeResult(r) {
+  const meta = r.envelope;
+
+  $("#envelope-meta").textContent =
+    `目标：${meta.target_name}　${meta.resistors.length} 个电阻 → ${meta.corner_count} 个角点　` +
+    meta.resistors.map((x) => `${x.id} ±${fmt(x.tolerance * 100)}%`).join("，");
+
+  // 概要 chips
+  const summary = $("#envelope-summary");
+  summary.innerHTML = "";
+  const chip = (k, v, cls = "") =>
+    el("span", { class: "sens-chip" }, [
+      el("span", { class: "k", text: k }),
+      el("span", { class: "v " + cls, text: v }),
+    ]);
+  summary.appendChild(chip("标称值 F₀", `${fmt(meta.nominal_value)} ${meta.target_unit}`));
+  summary.appendChild(
+    chip("最小值", `${fmt(meta.min_value)} ${meta.target_unit}（${envRelText(meta.deviation_rel_min)}）`, "num-neg")
+  );
+  summary.appendChild(
+    chip("最大值", `${fmt(meta.max_value)} ${meta.target_unit}（${envRelText(meta.deviation_rel_max)}）`))
+  ;
+  const widthRel = meta.nominal_value !== 0
+    ? `${fmt((meta.max_value - meta.min_value) / Math.abs(meta.nominal_value) * 100)}%`
+    : "—";
+  summary.appendChild(chip("包络宽度（相对 |F₀|）", widthRel));
+
+  drawEnvelopeChart(r);
+
+  // 两个极值角点卡
+  const extremes = $("#envelope-extremes");
+  extremes.innerHTML = "";
+  const extremeCard = (keyName, corner, value, absDev, relDev, cls) => {
+    const card = el("div", { class: `env-ext-card ${cls}` });
+    card.appendChild(el("div", { class: "env-ext-head", text: keyName }));
+    card.appendChild(
+      el("div", { class: "env-ext-value" }, [
+        document.createTextNode(`${fmt(value)} ${meta.target_unit}`),
+      ])
+    );
+    const sub = el("div", { class: "env-ext-sub" });
+    sub.appendChild(el("span", { text: `角点 ${corner.corner_id}　` }));
+    sub.appendChild(el("span", { text: `相对标称偏差：` }));
+    sub.appendChild(el("b", { class: value < meta.nominal_value ? "num-neg" : "", text: envRelText(relDev) }));
+    sub.appendChild(el("span", { text: `（Δ=${fmt(absDev)} ${meta.target_unit}）` }));
+    card.appendChild(sub);
+    const combo = el("div", { class: "env-ext-combo" });
+    envComboHtml(combo, corner.resistor_values, null);
+    card.appendChild(combo);
+    extremes.appendChild(card);
+  };
+  extremeCard(
+    "▼ 最小角点", r.min_corner, meta.min_value,
+    meta.deviation_abs_min, meta.deviation_rel_min, "env-ext-min"
+  );
+  extremeCard(
+    "▲ 最大角点", r.max_corner, meta.max_value,
+    meta.deviation_abs_max, meta.deviation_rel_max, "env-ext-max"
+  );
+
+  // 角点明细表：按目标值升序，最小 / 最大行高亮
+  const tbody = $("#envelope-table tbody");
+  tbody.innerHTML = "";
+  const sorted = [...r.corners].sort((a, b) => a.value - b.value);
+  const minVal = meta.min_value;
+  const maxVal = meta.max_value;
+  sorted.forEach((c) => {
+    const isMin = c.value === minVal;
+    const isMax = c.value === maxVal;
+    const tr = el("tr", {
+      class: [isMin ? "row-env-min" : "", isMax ? "row-env-max" : ""].join(" ").trim(),
+    });
+    tr.appendChild(el("td", { text: c.corner_id }));
+    const comboTd = el("td");
+    envComboHtml(comboTd, c.resistor_values, null);
+    tr.appendChild(comboTd);
+    const rel = meta.nominal_value !== 0 ? (c.value - meta.nominal_value) / meta.nominal_value : null;
+    tr.appendChild(
+      el("td", { class: c.value < 0 ? "num-neg" : "", text: `${fmt(c.value)} ${meta.target_unit}` })
+    );
+    tr.appendChild(el("td", {
+      class: rel !== null && rel < 0 ? "num-neg" : "",
+      text: envRelText(rel),
+    }));
+    tbody.appendChild(tr);
+  });
+
+  $("#envelope-feedback").classList.add("hidden");
+  $("#envelope-result").classList.remove("hidden");
+}
+
+/* 电路被编辑（节点表 / 元件表 / 接地变化）后，旧包络立即清空 */
+["#node-table", "#element-table"].forEach((sel) => {
+  const table = document.querySelector(sel);
+  table.addEventListener("input", () => {
+    if (envelopeResult && circuitSig() !== envelopeCircuitSig) invalidateEnvelope();
+  });
+  table.addEventListener("change", () => {
+    if (envelopeResult && circuitSig() !== envelopeCircuitSig) invalidateEnvelope();
+  });
+});
+$("#ground-select").addEventListener("change", () => {
+  if (envelopeResult && circuitSig() !== envelopeCircuitSig) invalidateEnvelope();
+});
 
 /* ------------------------------ 单参数扫描 ------------------------------ */
 function showSweepError(message) {
@@ -1627,6 +2185,7 @@ $("#btn-spice-import").addEventListener("click", async () => {
   resetSweep();
   resetThevenin();
   resetSensitivity();
+  resetEnvelope();
   portSel = {
     p: data.nodes.length > 1 ? (data.nodes.find((n) => n !== "0") || data.nodes[0]) : "",
     n: "0",
