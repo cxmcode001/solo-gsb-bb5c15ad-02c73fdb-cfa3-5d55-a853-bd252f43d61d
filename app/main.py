@@ -10,6 +10,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .envelope import (
+    TOLERANCE_MAX_PCT,
+    TOLERANCE_MAX_RESISTORS,
+    TOLERANCE_MIN_PCT,
+    TOLERANCE_MIN_RESISTORS,
+    envelope,
+)
 from .sensitivity import (
     SENSITIVITY_MAX_RATIO,
     SENSITIVITY_MIN_RATIO,
@@ -23,7 +30,7 @@ from .thevenin import thevenin_equivalent
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="直流网络校核器", version="1.4.0")
+app = FastAPI(title="直流网络校核器", version="1.5.0")
 
 
 async def _read_json_object(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
@@ -111,6 +118,22 @@ async def api_sensitivity(request: Request) -> JSONResponse:
     return JSONResponse(status_code=200, content=result)
 
 
+@app.post("/api/envelope")
+async def api_envelope(request: Request) -> JSONResponse:
+    payload, bad = await _read_json_object(request)
+    if bad is not None:
+        return bad
+
+    try:
+        result = envelope(payload)
+    except CircuitError as exc:
+        # 422：容差参数非法（envelope_validation），或基准网络无唯一解
+        # （沿用 /api/solve 的错误分组并带 stage:"baseline"）；
+        # 任一角点不可解时整体失败（envelope_corner_unsolvable，stage:"corner"）
+        return JSONResponse(status_code=422, content=exc.to_dict())
+    return JSONResponse(status_code=200, content=result)
+
+
 @app.post("/api/spice/import")
 async def api_spice_import(request: Request) -> JSONResponse:
     payload, bad = await _read_json_object(request)
@@ -162,6 +185,10 @@ async def api_meta() -> dict[str, Any]:
         "sweep_max_points": SWEEP_MAX_POINTS,
         "sensitivity_min_ratio": SENSITIVITY_MIN_RATIO,
         "sensitivity_max_ratio": SENSITIVITY_MAX_RATIO,
+        "envelope_min_resistors": TOLERANCE_MIN_RESISTORS,
+        "envelope_max_resistors": TOLERANCE_MAX_RESISTORS,
+        "envelope_min_tolerance_pct": TOLERANCE_MIN_PCT,
+        "envelope_max_tolerance_pct": TOLERANCE_MAX_PCT,
         "element_types": [
             {"type": "R", "name": "电阻", "unit": "Ω"},
             {"type": "I", "name": "独立电流源", "unit": "A"},

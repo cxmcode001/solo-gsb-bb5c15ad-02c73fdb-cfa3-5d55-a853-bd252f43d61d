@@ -320,6 +320,80 @@ body {
 .sens-bar-pos { background: var(--brand); }
 .sens-bar-neg { background: var(--neg); }
 
+/* ---------------- 电阻容差包络 ---------------- */
+.env-text-min { color: var(--ok); }
+.env-text-max { color: var(--neg); }
+.env-sw-min { background: var(--ok); }
+.env-sw-max { background: var(--neg); }
+
+/* 包络图 */
+.env-chart { margin-top: 6px; }
+.env-band { fill: rgba(27, 95, 192, 0.10); stroke: none; }
+.env-line-min { stroke: var(--ok); stroke-width: 1.6; stroke-dasharray: 6 3; }
+.env-line-max { stroke: var(--neg); stroke-width: 1.6; stroke-dasharray: 6 3; }
+.env-line-nom { stroke: var(--brand); stroke-width: 1.4; }
+.env-pt { fill: var(--brand); opacity: 0.55; }
+.env-pt-min { fill: var(--ok); stroke: #fff; stroke-width: 1; }
+.env-pt-max { fill: var(--neg); stroke: #fff; stroke-width: 1; }
+.env-chart .env-tick-min { fill: var(--ok); font-weight: 700; }
+.env-chart .env-tick-max { fill: var(--neg); font-weight: 700; }
+.env-chart .env-tick-nom { fill: var(--brand); font-weight: 700; }
+
+/* 极值角点卡片 */
+.env-ext-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.env-ext-card {
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 11px 13px;
+  background: #fbfcfe;
+}
+.env-ext-min { border-left-color: var(--ok); }
+.env-ext-max { border-left-color: var(--neg); }
+.env-ext-title { font-size: 13px; font-weight: 700; color: var(--ink-soft); }
+.env-ext-value { font-size: 22px; font-weight: 800; margin: 3px 0; font-variant-numeric: tabular-nums; }
+.env-ext-min .env-ext-value { color: var(--ok); }
+.env-ext-max .env-ext-value { color: var(--neg); }
+.env-ext-sub { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+
+/* 角点模式徽章 / 电阻方向 chips */
+.env-pattern {
+  display: inline-block;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: 2px;
+  background: #f1f4f9;
+  border-radius: 5px;
+  padding: 1px 8px;
+}
+.env-corner-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+.env-side {
+  display: inline-block;
+  border-radius: 5px;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+}
+.env-side-plus { background: #fdeee3; color: var(--neg); border-color: #f2d3bd; }
+.env-side-minus { background: #e7f6ee; color: var(--ok); border-color: #bfe2cd; }
+
+.result-grid tr.row-env-min td { background: var(--ok-bg); }
+.result-grid tr.row-env-max td { background: #fdf3ee; }
+.result-grid tr.row-env-both td {
+  background: linear-gradient(90deg, var(--ok-bg) 0%, var(--ok-bg) 50%, #fdf3ee 50%, #fdf3ee 100%);
+}
+.env-pt-both { fill: var(--brand); stroke: #fff; stroke-width: 1; }
+
 /* ---------------- SPICE 网表互换 ---------------- */
 .spice-text {
   width: 100%;
